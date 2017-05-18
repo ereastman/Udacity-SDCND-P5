@@ -38,9 +38,11 @@ def greyscale(img):
     tbr = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return tbr
 
-def showImage(img, figure_num=0, cmap='gray'):
+def showImage(img, figure_num=0, title=None):
     f = plt.figure(figure_num)
-    plt.imshow(img, cmap='gray')
+    plt.imshow(img)
+    if title:
+        plt.title(title)
     return figure_num+1
   
 def normalize(arr):
@@ -62,41 +64,66 @@ def drawBox(img, center, min_row, height, width, c=[0, 255, 0], thickness=10):
     tl = (int(center-width/2), (min_row-height))
     br = (int(center+width/2), min_row)
     cv2.rectangle(img, pt1=tl, pt2=br, color=c, thickness=thickness)
+        
+def perturb(image, keep=0, angle_limit=15, scale_limit=0.1, translate_limit=3, distort_limit=3, illumin_limit=0.2):
 
-def drawPoints(img, points, radius=5, color=[0, 0, 255]):
-    new_img = np.copy(img)
-    for p in points:
-        cv2.circle(new_img, tuple(p), radius, color, thickness=3)
-    return new_img
+    if(np.random.uniform() < keep):
+        return image
+    (W, H, C) = image.shape
+    center = np.array([W / 2., H / 2.])
+    da = np.random.uniform(low=-1, high=1) * angle_limit/180. * math.pi
+    scale = np.random.uniform(low=-1, high=1) * scale_limit + 1
 
-def threshold(img, thresh, to_val=1):
-    # Apply thresholding
-    binary = np.zeros_like(img)
-    binary[(img >= thresh[0]) & (img <= thresh[1])] = to_val
-    
-    return binary
-    
-def region_of_interest(img, vertices):
-    """
-    Applies an image mask.
-    Only keeps the region of the image defined by the polygon
-    formed from `vertices`. The rest of the image is set to black.
-    """
-    # defining a blank mask to start with
-    mask = np.zeros_like(img)
+    # Use small angle approximation instead of sin/cos functions
+    cc = scale*(1 - (da*da)/2.)
+    ss = scale*da
+    rotation    = np.array([[cc, ss],[-ss,cc]])
+    translation = np.random.uniform(low=-1, high=1, size=(1,2)) * translate_limit
+    distort     = np.random.standard_normal(size=(4,2)) * distort_limit
 
-    # defining a 3 channel or 1 channel color to fill the mask with depending on the input image
-    if len(img.shape) > 2:
-        channel_count = img.shape[2]  # i.e. 3 or 4 depending on your image
-        ignore_mask_color = (255,) * channel_count
-    else:
-        ignore_mask_color = 255
+    pts1 = np.array([[0., 0.], [0., H], [W, H], [W, 0.]])
+    pts2 = np.matmul(pts1-center, rotation) + center  + translation
 
-    # filling pixels inside the polygon defined by "vertices" with the fill color
-    cv2.fillPoly(mask, vertices, ignore_mask_color)
+    #add perspective noise
+    pts2 = pts2 + distort
 
-    # returning the image only where mask pixels are nonzero
-    masked_image = cv2.bitwise_and(img, mask)
-    return masked_image
+    #http://milindapro.blogspot.jp/2015/05/opencv-filters-copymakeborder.html
+    matrix  = cv2.getPerspectiveTransform(pts1.astype(np.float32), pts2.astype(np.float32)) 
+    perturb = cv2.warpPerspective(image, matrix, (W, H), flags=cv2.INTER_LINEAR,
+                                  borderMode=cv2.BORDER_REFLECT_101)  # BORDER_WRAP  #BORDER_REFLECT_101  #cv2.BORDER_CONSTANT  BORDER_REPLICATE
 
+    #brightness, contrast, saturation-------------
+    #from mxnet code
+    if 1:  #brightness
+        alpha = 1.0 + illumin_limit*np.random.uniform(-1, 1)
+        #alpha = 1.0 + illumin_limit*-1
+        perturb = perturb * alpha
+        perturb = np.clip(perturb,0.,255.)
+        pass
 
+    coef = np.array([[[0.299, 0.587, 0.114]]]) #rgb to gray (YCbCr) :  Y = 0.299R + 0.587G + 0.114B
+
+    if 1:  #contrast
+        alpha = illumin_limit*np.random.uniform(-1, 1)
+        #alpha = illumin_limit*-1
+        gray = perturb * coef
+        gray = (3.0 * (alpha) / gray.size) * np.sum(gray)
+        perturb = perturb * (1.0 + alpha)
+        perturb += gray
+        perturb = np.clip(perturb,0.,255.)
+        pass
+
+    if 1:  #saturation
+        alpha = illumin_limit*np.random.uniform(-1, 1)
+        #alpha = illumin_limit*-1
+        gray = perturb * coef
+        gray = np.sum(gray, axis=2, keepdims=True)
+        #print(gray.shape)
+        #print(alpha.shape)
+        gray = np.multiply(alpha, gray)
+        perturb = perturb * (1.0 + alpha)
+        perturb += gray
+        perturb = np.clip(perturb,0.,255.)
+        pass
+
+    return perturb
